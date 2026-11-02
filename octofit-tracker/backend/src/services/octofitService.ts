@@ -64,11 +64,41 @@ export async function createTeam(input: unknown) {
 }
 
 export async function getLeaderboard() {
-  return [];
+  const totals = await Activity.aggregate([
+    { $group: { _id: '$team', totalPoints: { $sum: '$points' } } },
+    { $sort: { totalPoints: -1, _id: 1 } },
+  ]);
+
+  const teams = await Team.find({ _id: { $in: totals.map(({ _id }) => _id) } }).lean();
+  const names = new Map(teams.map((team) => [team._id.toString(), team.name]));
+
+  return totals.map((entry, index) => ({
+    teamName: names.get(entry._id.toString()) ?? 'Unknown team',
+    totalPoints: entry.totalPoints,
+    rank: index + 1,
+  }));
 }
 
-export async function suggestWorkouts(_userEmail: string) {
-  return Workout.find().limit(1).lean();
+export async function suggestWorkouts(userEmail: string) {
+  const user = await User.findOne({ email: userEmail.toLowerCase() }).lean();
+  if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+
+  const recentActivities = await Activity.find({ user: user._id }).sort({ occurredAt: -1 }).limit(5).lean();
+  const recentTypes = new Map<string, number>();
+  for (const activity of recentActivities) {
+    recentTypes.set(activity.type, (recentTypes.get(activity.type) ?? 0) + 1);
+  }
+
+  const activityFocus = [...recentTypes.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+  const focus = activityFocus === 'run' || activityFocus === 'cycle' ? 'endurance' : activityFocus === 'strength' ? 'strength' : user.fitnessGoal;
+  const workouts = await Workout.find({ focus }).lean();
+
+  return workouts.map((workout) => ({
+    ...workout,
+    reason: activityFocus
+      ? `Matches your recent ${activityFocus} activity and ${focus} goal.`
+      : `Matches your ${focus} fitness goal and recent activity pattern.`,
+  }));
 }
 
 export { User };
